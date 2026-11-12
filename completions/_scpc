@@ -1,0 +1,131 @@
+#compdef scpc
+
+# Zsh completion for scpc (parallel scp wrapper)
+
+_scpc_collect_hosts() {
+    local -a hosts
+    local line word
+
+    # 1. ~/.ssh/config Host entries (skip wildcards)
+    if [[ -r "$HOME/.ssh/config" ]]; then
+        while IFS= read -r line; do
+            line="${line%%#*}"
+            if [[ "$line" =~ ^[[:space:]]*[Hh][Oo][Ss][Tt][[:space:]]+(.+)$ ]]; then
+                for word in ${=match[1]}; do
+                    [[ "$word" == *[\*\?\!]* ]] && continue
+                    hosts+=("$word")
+                done
+            fi
+        done < "$HOME/.ssh/config"
+    fi
+
+    # 2. ~/.ssh/known_hosts (skip hashed |1|... entries, strip [host]:port)
+    if [[ -r "$HOME/.ssh/known_hosts" ]]; then
+        while IFS= read -r line; do
+            [[ -z "$line" || "$line" == \#* || "$line" == \|* || "$line" == @* ]] && continue
+            word="${line%%[[:space:]]*}"
+            for item in ${(s:,:)word}; do
+                if [[ "$item" == \[*\]* ]]; then
+                    item="${item#\[}"
+                    item="${item%%\]*}"
+                fi
+                [[ -n "$item" ]] && hosts+=("$item")
+            done
+        done < "$HOME/.ssh/known_hosts"
+    fi
+
+    # 3. /etc/hosts
+    if [[ -r "/etc/hosts" ]]; then
+        while IFS= read -r line; do
+            line="${line%%#*}"
+            [[ -z "${line//[[:space:]]/}" ]] && continue
+            local -a fields
+            fields=(${=line})
+            for word in "${fields[@]:1}"; do
+                [[ -n "$word" ]] && hosts+=("$word")
+            done
+        done < "/etc/hosts"
+    fi
+
+    # Deduplicate and return
+    reply=(${(u)hosts})
+}
+
+_scpc_remote_or_local() {
+    local cur="$PREFIX$SUFFIX"
+
+    # If user already typed host:path, try remote path completion via non-interactive ssh
+    if [[ "$cur" == *:* ]]; then
+        local user_host="${cur%%:*}"
+        local rpath="${cur#*:}"
+        local dir_prefix=""
+        if [[ "$rpath" == */* ]]; then
+            dir_prefix="${rpath%/*}/"
+        fi
+        local -a rfiles
+        rfiles=(${(f)"$(ssh -o BatchMode=yes -o ConnectTimeout=2 "$user_host" "ls -1dAp -- ${rpath}*" 2>/dev/null)"})
+        if (( ${#rfiles} > 0 )); then
+            compset -P '*:'
+            compadd -Q -S '' -- "${rfiles[@]}"
+            return 0
+        fi
+        return 1
+    fi
+
+    # Complete hostnames (with trailing ':') and local files
+    local user_prefix=""
+    if [[ "$cur" == *@* ]]; then
+        user_prefix="${cur%%@*}@"
+    fi
+
+    local -a reply hosts_with_colon
+    _scpc_collect_hosts
+    local h
+    for h in "${reply[@]}"; do
+        hosts_with_colon+=("${user_prefix}${h}:")
+    done
+
+    local ret=1
+    if (( ${#hosts_with_colon} > 0 )); then
+        compadd -S '' -X 'remote hosts' -- "${hosts_with_colon[@]}" && ret=0
+    fi
+    if [[ -z "$user_prefix" ]]; then
+        _files && ret=0
+    fi
+    return $ret
+}
+
+_scpc() {
+    _arguments -s -S \
+        '(-h --help)'{-h,--help}'[Show help message and exit]' \
+        '(-w --workers)'{-w+,--workers=}'[Number of parallel transfer workers]:workers:' \
+        '(-s --skip -f --full)'{-s,--skip}'[Skip existing destination files without prompting]' \
+        '(-s --skip -f --full)'{-f,--full}'[Overwrite all existing destination files without prompting]' \
+        '-3[Copy between two remote hosts through local host]' \
+        '-4[Force IPv4 addresses only]' \
+        '-6[Force IPv6 addresses only]' \
+        '-A[Allow forwarding of ssh-agent]' \
+        '-B[Selects batch mode]' \
+        '-C[Compression enable]' \
+        '-O[Use legacy SCP protocol]' \
+        '-p[Preserves modification times, access times, and file mode bits]' \
+        '-q[Quiet mode: disables progress meter]' \
+        '-R[Use SFTP protocol (default on modern OpenSSH)]' \
+        '-r[Recursively copy entire directories]' \
+        '-T[Disable strict filename checking]' \
+        '-v[Verbose mode]' \
+        '-c+[Selects the cipher to use]:cipher:' \
+        '-D+[Connect directly to a local SFTP server program]:sftp_server_path:_files' \
+        '-F+[Specifies an alternative per-user configuration file]:ssh_config:_files' \
+        '-i+[Selects the file from which the identity is read]:identity_file:_files' \
+        '-J+[Connect to the target host via jump host]:destination:' \
+        '-l+[Limits the used bandwidth, specified in Kbit/s]:limit_kbps:' \
+        '*-o+[Sort by size (asc|desc) or pass option to ssh]:option:(asc desc)' \
+        '-P+[Specifies the port to connect to on the remote host]:port:' \
+        '-S+[Name of program to use for the encrypted connection]:program:_files' \
+        '*-X+[Specify SFTP option]:sftp_option:' \
+        '*:source or target:_scpc_remote_or_local'
+}
+
+_scpc "$@"
+

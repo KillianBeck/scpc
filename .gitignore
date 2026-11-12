@@ -1,0 +1,9 @@
+# Build artifacts
+scpc
+test_scpc
+*.o
+*.dSYM/
+
+# OS files
+.DS_Store
+
